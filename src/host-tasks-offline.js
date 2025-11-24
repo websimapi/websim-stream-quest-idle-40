@@ -3,6 +3,41 @@ import { SKILLS } from './skills.js';
 import { appendHostLog } from './network-common.js';
 import { resolveTaskRewards, rollDistributedTask } from './host-tasks-rewards.js';
 
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+// Helper: rebuild activeEnergy + stored energy cells from a remaining ms budget
+function rebuildEnergyFromRemaining(player, remainingMs, now) {
+    if (remainingMs <= 0) {
+        player.activeEnergy = null;
+        player.energy = [];
+        return;
+    }
+
+    const fullCells = Math.floor(remainingMs / ONE_HOUR_MS);
+    const leftoverMs = remainingMs - fullCells * ONE_HOUR_MS;
+
+    let storedCells = fullCells;
+    let activeConsumedMs = null;
+
+    if (leftoverMs > 0) {
+        // One partially used active cell plus full stored cells
+        activeConsumedMs = ONE_HOUR_MS - leftoverMs;
+    } else if (fullCells > 0 && player.activeTask) {
+        // No partial cell, but we still have an active task: keep one fresh active cell
+        activeConsumedMs = 0;
+        storedCells = fullCells - 1;
+    }
+
+    if (storedCells < 0) storedCells = 0;
+    player.energy = new Array(storedCells).fill(now);
+
+    if (activeConsumedMs !== null) {
+        player.activeEnergy = { consumedMs: activeConsumedMs };
+    } else {
+        player.activeEnergy = null;
+    }
+}
+
 // New: one-time offline progress application when host (re)starts
 export async function applyOfflineProgress(networkManager) {
     try {
@@ -52,7 +87,6 @@ export async function applyOfflineProgress(networkManager) {
 
             // --- ENERGY MODEL FOR OFFLINE TIME ---
             // Determine total remaining "active task time" based on energy cells
-            const ONE_HOUR_MS = 60 * 60 * 1000;
 
             // Normalize activeEnergy.consumedMs for legacy records
             let activeConsumedMs = 0;
@@ -115,35 +149,15 @@ export async function applyOfflineProgress(networkManager) {
                 // Re-map remaining energy and task start time based on partial progress.
 
                 const remainingEnergyMs = availableMsTotal - activeMs;
-                // Rebuild energy cells from remainingEnergyMs
-                const fullCells = Math.floor(remainingEnergyMs / ONE_HOUR_MS);
-                const leftoverMs = remainingEnergyMs - fullCells * ONE_HOUR_MS;
+                rebuildEnergyFromRemaining(player, remainingEnergyMs, now);
 
                 if (remainingEnergyMs <= 0) {
-                    player.activeEnergy = null;
-                    player.energy = [];
                     player.pausedTask = {
                         taskId: active.taskId,
                         duration: active.duration
                     };
                     player.activeTask = null;
                 } else {
-                    // At least some energy remains
-                    if (fullCells === 0) {
-                        // Single partially used active cell
-                        player.activeEnergy = {
-                            consumedMs: ONE_HOUR_MS - leftoverMs
-                        };
-                        player.energy = [];
-                    } else {
-                        // One current cell (maybe partially used) plus stored full cells
-                        const newStored = Math.max(0, fullCells - 1);
-                        player.energy = new Array(newStored).fill(now);
-                        player.activeEnergy = {
-                            consumedMs: leftoverMs === 0 ? 0 : (ONE_HOUR_MS - leftoverMs)
-                        };
-                    }
-
                     // Task still in progress: adjust start time so progress matches elapsed portion
                     player.activeTask.startTime = active.startTime + activeMs;
                 }
@@ -247,23 +261,7 @@ export async function applyOfflineProgress(networkManager) {
                 player.activeTask = null;
             } else {
                 // Rebuild energy cells from remainingEnergyMs
-                const fullCells = Math.floor(remainingEnergyMs / ONE_HOUR_MS);
-                const leftoverMs = remainingEnergyMs - fullCells * ONE_HOUR_MS;
-
-                if (fullCells === 0) {
-                    // Single partially used active cell
-                    player.activeEnergy = {
-                        consumedMs: ONE_HOUR_MS - leftoverMs
-                    };
-                    player.energy = [];
-                } else {
-                    // One active cell (maybe partially used) plus stored full cells
-                    const newStored = Math.max(0, fullCells - 1);
-                    player.energy = new Array(newStored).fill(now);
-                    player.activeEnergy = {
-                        consumedMs: leftoverMs === 0 ? 0 : (ONE_HOUR_MS - leftoverMs)
-                    };
-                }
+                rebuildEnergyFromRemaining(player, remainingEnergyMs, now);
 
                 // Move the activeTask startTime forward so the current cycle reflects remaining progress
                 const usedForCyclesMs = cycles * active.duration;
