@@ -1,9 +1,7 @@
 import { savePlayer, getAllPlayers } from './db.js';
 import { SKILLS } from './skills.js';
-import { appendHostLog } from './network-common.js';
+import { appendHostLog, ONE_HOUR_MS, normalizeActiveEnergy } from './network-common.js';
 import { resolveTaskRewards, rollDistributedTask } from './host-tasks-rewards.js';
-
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 // Helper: rebuild activeEnergy + stored energy cells from a remaining ms budget
 function rebuildEnergyFromRemaining(player, remainingMs, now) {
@@ -32,7 +30,8 @@ function rebuildEnergyFromRemaining(player, remainingMs, now) {
     player.energy = new Array(storedCells).fill(now);
 
     if (activeConsumedMs !== null) {
-        player.activeEnergy = { consumedMs: activeConsumedMs };
+        // Keep new-model shape: only consumedMs is authoritative; startTime is legacy-only
+        player.activeEnergy = { consumedMs: Math.min(ONE_HOUR_MS, Math.max(0, activeConsumedMs)) };
     } else {
         player.activeEnergy = null;
     }
@@ -60,6 +59,10 @@ export async function applyOfflineProgress(networkManager) {
             if (!active || !active.taskId || !active.startTime || !active.duration) {
                 continue;
             }
+
+            // Before doing any catchup math, clear out expired active cells so we
+            // don't accidentally count already-burned energy as still available.
+            await normalizeActiveEnergy(player);
 
             const elapsed = now - (active.startTime || 0);
             if (elapsed <= 0) {
